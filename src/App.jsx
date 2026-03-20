@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import logo from "./assets/logo.png";
-import WarehouseBinMap from "./WarehouseBinMap";
+import WarehouseBinMap from "./WarehouseBinMap.tsx";
 import {
   Upload,
   RefreshCcw,
