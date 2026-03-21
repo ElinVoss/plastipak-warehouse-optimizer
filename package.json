@@ -13,7 +13,8 @@
     "preview": "node scripts\\vite-with-esbuild.mjs preview",
     "pack": "npm run dist",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win nsis"
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "installer": "npm run dist:win"
   },
   "dependencies": {
     "jspdf": "^4.2.0",
