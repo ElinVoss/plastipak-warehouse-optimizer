@@ -1,4 +1,4 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 // Reserved for future OS integrations (dialogs, filesystem exports, etc.).
 // Keep surface area minimal for safety.
@@ -10,4 +10,5 @@ try {
 
 contextBridge.exposeInMainWorld('wo', {
   version: appVersion,
+  openMapWindow: () => ipcRenderer.invoke('wo:open-map-window'),
 });

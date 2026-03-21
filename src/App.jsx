@@ -33,6 +33,10 @@ import {
 
 export default function App() {
   const APP_VERSION = window.wo?.version ?? "2.4.3";
+  const mapOnlyMode = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("view") === "map";
+  }, []);
   const [xlsxReady, setXlsxReady] = useState(false);
   const xlsxRef = useRef(null);
 
@@ -572,6 +576,29 @@ export default function App() {
     const start = (page - 1) * pageSize;
     return filteredMoves.slice(start, start + pageSize);
   }, [filteredMoves, page, pageSize]);
+
+  async function openMapInSeparateWindow() {
+    try {
+      if (window.wo?.openMapWindow) {
+        await window.wo.openMapWindow();
+      } else {
+        setLoadError("Map window is only available in the desktop app build.");
+      }
+    } catch (err) {
+      console.error(err);
+      setLoadError("Failed to open separate map window.");
+    }
+  }
+
+  if (mapOnlyMode) {
+    return (
+      <div className="min-h-screen bg-slate-100 p-3">
+        <div className="mx-auto max-w-[1920px] rounded-xl border border-slate-200/60 bg-white shadow-sm">
+          <WarehouseBinMap />
+        </div>
+      </div>
+    );
+  }
 
   if (!xlsxReady) {
     return (
@@ -1319,7 +1346,19 @@ export default function App() {
                 </div>
               )}
 
-              {activePane === "MAP" && <WarehouseBinMap />}
+              {activePane === "MAP" && (
+                <div className="space-y-3">
+                  <div className="flex justify-end">
+                    <button
+                      onClick={openMapInSeparateWindow}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-colors shadow-sm"
+                    >
+                      Open in Separate Window
+                    </button>
+                  </div>
+                  <WarehouseBinMap />
+                </div>
+              )}
 
               {activePane === "GUIDE" && (
                 <div className="bg-white p-6 rounded-xl border border-slate-200/60 shadow-sm">
