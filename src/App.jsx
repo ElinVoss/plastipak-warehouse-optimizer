@@ -5,12 +5,16 @@ import FeedbackSystem from "./features/support/components/FeedbackSystem";
 import SimpleBarChart from "./features/analytics/components/SimpleBarChart";
 import BeforeAfterModal from "./features/analytics/components/BeforeAfterModal";
 import USER_GUIDE from "./features/guide/userGuide";
+import { Button } from "./components/ui/button";
+import { Card } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { Badge } from "./components/ui/badge";
 import { normBin, toNum, parseBin, inWarehouse } from "./domain/bin";
 import { baseCapacity } from "./domain/capacity";
 import { loadCapOverrides, saveCapOverrides, loadDisabledBins, saveDisabledBins } from "./domain/storage";
 import { validateSapHeaders, parseSapExport, buildBinState } from "./domain/sap";
 import { calculateAnalytics } from "./domain/analytics";
-import { consolidate, findBestBin } from "./domain/planning";
+import { consolidate, findBestBin, moveKey } from "./domain/planning";
 import {
   Upload,
   RefreshCcw,
@@ -23,13 +27,33 @@ import {
   ArrowRight,
   MessageSquare,
   X,
-  CheckCircle,
   Trash2,
   RotateCcw,
-  AlertTriangle,
   Ban,
 } from "lucide-react";
 
+function Eyebrow({ children, className = "" }) {
+  return <div className={`text-[11px] uppercase tracking-[0.18em] font-semibold ${className}`}>{children}</div>;
+}
+
+function MetricCard({ label, value, tone = "paper" }) {
+  const toneClasses = {
+    console: "bg-[#1f2933] border-slate-800 text-stone-100 shadow-[0_12px_30px_rgba(31,41,51,0.18)]",
+    paper: "bg-[#fcfaf6] border-stone-300 text-slate-900 shadow-[0_10px_24px_rgba(41,37,36,0.05)]",
+    danger: "bg-rose-50 border-rose-200 text-rose-900 shadow-[0_10px_24px_rgba(127,29,29,0.08)]",
+  };
+  const labelClasses = {
+    console: "text-stone-300",
+    paper: "text-stone-500",
+    danger: "text-rose-500",
+  };
+  return (
+    <Card className={`min-w-[92px] p-4 text-center ${toneClasses[tone]}`} variant="paper">
+      <div className={`text-[10px] uppercase tracking-[0.18em] font-semibold ${labelClasses[tone]}`}>{label}</div>
+      <div className="text-3xl font-bold tabular-nums mt-1">{value}</div>
+    </Card>
+  );
+}
 
 export default function App() {
   const APP_VERSION = window.wo?.version ?? "2.4.3";
@@ -61,10 +85,9 @@ export default function App() {
   const [moves, setMoves] = useState([]);
   const [freedBins, setFreedBins] = useState([]);
   const [completed, setCompleted] = useState(new Set());
-  const [skipped, setSkipped] = useState(new Map());
-  const [skipModalMove, setSkipModalMove] = useState(null);
-  const [skipReason, setSkipReason] = useState("");
-  const [skipSubmitStatus, setSkipSubmitStatus] = useState("IDLE");
+  const [ignoredMoves, setIgnoredMoves] = useState(new Map());
+  const [ignoreModalMove, setIgnoreModalMove] = useState(null);
+  const [ignoreReason, setIgnoreReason] = useState("");
   const [analytics, setAnalytics] = useState(null);
   const [showBeforeAfter, setShowBeforeAfter] = useState(false);
   const [initialBinState, setInitialBinState] = useState(null);
@@ -112,9 +135,9 @@ export default function App() {
   useEffect(() => {
     settingsRef.current = {
       warehouse, excludeRbins, abcThreshold, phase2Enabled, phase2Threshold,
-      allowSrc110, allowTgt110, allowTgt111, excludeHISource, excludeCustomBins, lineBins, capOverrides, disabledBins,
+      allowSrc110, allowTgt110, allowTgt111, excludeHISource, excludeCustomBins, lineBins, capOverrides, disabledBins, ignoredMoves,
     };
-  }, [warehouse, excludeRbins, abcThreshold, phase2Enabled, phase2Threshold, allowSrc110, allowTgt110, allowTgt111, excludeHISource, excludeCustomBins, lineBins, capOverrides, disabledBins]);
+  }, [warehouse, excludeRbins, abcThreshold, phase2Enabled, phase2Threshold, allowSrc110, allowTgt110, allowTgt111, excludeHISource, excludeCustomBins, lineBins, capOverrides, disabledBins, ignoredMoves]);
 
   useEffect(() => { saveCapOverrides(capOverrides); }, [capOverrides]);
   useEffect(() => { saveDisabledBins(disabledBins); }, [disabledBins]);
@@ -196,6 +219,7 @@ export default function App() {
       disabledBins: s.disabledBins || new Set(),
       excludeHISource: s.excludeHISource !== false,
       excludedBinSet: s.excludeCustomBins ? new Set(CUSTOM_EXCLUDED_BINS) : new Set(),
+      ignoredMoveKeys: new Set(Array.from((s.ignoredMoves || new Map()).keys())),
     });
 
     const freed = Object.keys(initialState)
@@ -218,7 +242,6 @@ export default function App() {
     setAnalytics(analyticsData);
     setShowBeforeAfter(false);
     setCompleted(new Set());
-    setSkipped(new Map());
     setPage(1);
   }
 
@@ -227,6 +250,9 @@ export default function App() {
     if (!file) return;
     if (!xlsxReady) { setLoadError("Spreadsheet tools are still loading. Try again in a moment."); return; }
     try {
+      const clearedIgnoredMoves = new Map();
+      setIgnoredMoves(clearedIgnoredMoves);
+      settingsRef.current = { ...settingsRef.current, ignoredMoves: clearedIgnoredMoves };
       const XLSX = xlsxRef.current;
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
@@ -251,7 +277,6 @@ export default function App() {
   }
 
   function toggleDone(id) {
-    if (skipped.has(id)) return;
     setCompleted((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -259,49 +284,25 @@ export default function App() {
     });
   }
 
-  function openSkipModal(move) {
-    setSkipModalMove(move);
-    setSkipReason("");
-    setSkipSubmitStatus("IDLE");
+  function openIgnoreModal(move) {
+    setIgnoreModalMove(move);
+    setIgnoreReason("");
   }
 
-  async function handleSkipSubmit(e) {
+  function handleIgnoreMove(e) {
     e.preventDefault();
-    if (!skipModalMove || !skipReason.trim()) return;
-    setSkipSubmitStatus("SUBMITTING");
-    const payload = {
-      report_type: "MOVE_NOT_DOABLE",
-      move_id: skipModalMove.id,
-      from_bin: skipModalMove.from,
-      to_bin: skipModalMove.to,
-      material: skipModalMove.materialId,
-      material_desc: skipModalMove.materialDesc || "",
-      quantity: skipModalMove.qty,
-      warehouse,
-      reason: skipReason.trim(),
+    if (!ignoreModalMove || !rawSapJson) return;
+    const ignoredKey = moveKey(ignoreModalMove.materialId, ignoreModalMove.from, ignoreModalMove.to);
+    const nextIgnoredMoves = new Map(ignoredMoves);
+    nextIgnoredMoves.set(ignoredKey, {
+      reason: ignoreReason.trim(),
       timestamp: new Date().toISOString(),
-      app_version: APP_VERSION,
-    };
-    try {
-      const res = await fetch(FORMSPREE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        setSkipped((prev) => {
-          const next = new Map(prev);
-          next.set(skipModalMove.id, { reason: skipReason.trim(), timestamp: new Date().toISOString() });
-          return next;
-        });
-        setSkipSubmitStatus("SUCCEEDED");
-        setTimeout(() => setSkipModalMove(null), 1200);
-      } else {
-        setSkipSubmitStatus("ERROR");
-      }
-    } catch {
-      setSkipSubmitStatus("ERROR");
-    }
+      move: ignoreModalMove,
+    });
+    setIgnoredMoves(nextIgnoredMoves);
+    setIgnoreModalMove(null);
+    setIgnoreReason("");
+    buildPlanFromRaw(rawSapJson);
   }
 
   function copyText(t) {
@@ -319,8 +320,7 @@ export default function App() {
         Material: m.materialId,
         Description: m.materialDesc,
         Quantity: m.qty,
-        Status: skipped.has(m.id) ? "SKIPPED" : completed.has(m.id) ? "DONE" : "PENDING",
-        "Skip Reason": skipped.has(m.id) ? skipped.get(m.id).reason : "",
+        Status: completed.has(m.id) ? "DONE" : "PENDING",
       }));
       const ws = XLSX.utils.json_to_sheet(data);
       const wb = XLSX.utils.book_new();
@@ -472,7 +472,7 @@ export default function App() {
           m.materialId,
           m.materialDesc ? m.materialDesc.slice(0, 30) : "",
           m.qty.toFixed(1),
-          skipped.has(m.id) ? "SKIP" : completed.has(m.id) ? "DONE" : "",
+          completed.has(m.id) ? "DONE" : "",
         ]),
         styles: { fontSize: 7.5, cellPadding: 1.8 },
         headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: "bold" },
@@ -553,7 +553,6 @@ export default function App() {
     const q = searchTerm.trim().toLowerCase();
     return moves.filter((m) => {
       if (hideCompleted && completed.has(m.id)) return false;
-      if (hideCompleted && skipped.has(m.id)) return false;
       if (!q) return true;
       return (
         String(m.materialId || "").toLowerCase().includes(q) ||
@@ -562,7 +561,7 @@ export default function App() {
         String(m.to || "").toLowerCase().includes(q)
       );
     });
-  }, [moves, completed, skipped, searchTerm, hideCompleted]);
+  }, [moves, completed, searchTerm, hideCompleted]);
 
   useEffect(() => { setPage(1); }, [searchTerm, hideCompleted]);
 
@@ -611,84 +610,97 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 font-sans">
+    <div className="min-h-screen bg-[#ece6da] text-slate-900 font-sans">
       <div className="mx-auto max-w-7xl p-3 lg:p-5">
-        <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xl shadow-slate-900/5">
+        <div className="overflow-hidden rounded-[28px] border border-stone-300/80 bg-[#fcfaf6] shadow-[0_24px_60px_rgba(41,37,36,0.12)]">
           {/* HEADER */}
-          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white">
-            <div className="px-5 py-3.5 flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-xl bg-white/10 border border-white/10 flex items-center justify-center overflow-hidden backdrop-blur">
-                  <img src={logo} alt="Warehouse Optimizer" className="h-7 w-7 object-contain" />
+          <div className="bg-[#1f2933] text-stone-100">
+            <div className="px-6 py-5 flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-2xl bg-[#f0b56a] border border-[#f6cb93] flex items-center justify-center overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]">
+                  <img src={logo} alt="Warehouse Optimizer" className="h-8 w-8 object-contain drop-shadow-sm" />
                 </div>
                 <div>
-                  <div className="text-lg font-bold tracking-tight flex items-center gap-2">
+                  <div className="text-xl font-bold tracking-tight flex items-center gap-3">
                     Warehouse Optimizer
-                    <span className="text-[9px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-400/20 px-1.5 py-0.5 rounded-md tracking-wide">v{APP_VERSION}</span>
+                    <Badge variant="console" className="text-[11px] tracking-[0.14em] px-2.5 py-1">
+                      v{APP_VERSION}
+                    </Badge>
+                    <div className="hidden lg:flex items-center gap-2 text-stone-300 text-sm">
+                      <div className="w-2 h-2 bg-emerald-400 rounded-full"></div>
+                      <span>Floor Use</span>
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-400 font-medium tracking-wide">
-                    Tunnel-aware consolidation & putaway
+                  <div className="text-xs text-stone-300 font-medium tracking-[0.18em] mt-1 uppercase">
+                    Consolidation Planning and Putaway Decisions
                   </div>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                <label className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-3.5 py-2 font-semibold text-xs cursor-pointer transition-colors shadow-sm">
-                  <Upload size={14} /> Load SAP
+              <div className="flex flex-wrap gap-2">
+                <label className="inline-flex items-center gap-2 rounded-2xl bg-stone-100 text-stone-900 hover:bg-stone-200 px-4 py-2.5 font-semibold text-sm cursor-pointer transition-colors border border-stone-200">
+                  <Upload size={16} className="text-amber-700" />
+                  <span>Load SAP Export</span>
                   <input type="file" className="hidden" onChange={loadFile} accept=".xlsx,.xls" />
                 </label>
-                <button
+                <Button
                   onClick={() => rawSapJson && buildPlanFromRaw(rawSapJson)}
                   disabled={!rawSapJson}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-white/10 hover:bg-white/15 px-3.5 py-2 font-semibold text-xs border border-white/10 disabled:opacity-30 transition-colors"
+                  variant="console"
+                  size="lg"
+                  className="border-white/10 bg-[#32404d] hover:bg-[#3a4958]"
                 >
-                  <RefreshCcw size={14} /> Rebuild
-                </button>
-                <button
+                  <RefreshCcw size={16} className="text-stone-200" /> Rebuild Plan
+                </Button>
+                <Button
                   onClick={exportMoves}
                   disabled={!moves.length}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 px-3.5 py-2 font-semibold text-xs disabled:opacity-30 transition-colors shadow-sm"
+                  variant="accent"
+                  size="lg"
                 >
-                  <Download size={14} /> Export
-                </button>
-                <button
+                  <Download size={16} /> Export Moves
+                </Button>
+                <Button
                   onClick={() => setSupportOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-white/5 hover:bg-white/10 px-3.5 py-2 font-semibold text-xs border border-white/10 transition-colors"
+                  variant="ghost-light"
+                  size="lg"
                   title="Send a support message"
                 >
-                  <MessageSquare size={14} /> Support
-                </button>
+                  <MessageSquare size={16} className="text-stone-300" /> Support
+                </Button>
               </div>
             </div>
-            <div className="h-px w-full bg-gradient-to-r from-transparent via-indigo-400/40 to-transparent" />
+            <div className="h-1 w-full bg-[#f0b56a]" />
           </div>
 
           <div className="grid grid-cols-12">
             {/* SIDE CONTROL PANEL */}
-            <aside className="col-span-12 lg:col-span-4 border-r border-slate-200/60 bg-slate-50/80 p-4 space-y-4">
+            <aside className="col-span-12 lg:col-span-4 border-r border-stone-300/80 bg-[#f2ece0] p-4 space-y-4">
               {loadError && (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-700">
                   {loadError}
                 </div>
               )}
 
-              <nav className="flex flex-wrap gap-1 bg-white p-1.5 rounded-xl border border-slate-200/60 shadow-sm">
-                {["QUEUE", "PUTAWAY", "BIN MGMT", "ANALYTICS", "MAP", "GUIDE"].map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setActivePane(p)}
-                    className={`flex-1 min-w-[60px] py-2 rounded-lg font-semibold text-[10px] tracking-wide transition-all ${
-                      activePane === p
-                        ? "bg-slate-900 text-white shadow-sm"
-                        : "text-slate-400 hover:text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
+              <nav className="rounded-2xl border border-stone-300 bg-[#fcfaf6] p-2 shadow-[0_8px_24px_rgba(41,37,36,0.06)]">
+                <div className="flex flex-wrap gap-1">
+                  {["QUEUE", "PUTAWAY", "BIN MGMT", "ANALYTICS", "MAP", "GUIDE"].map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setActivePane(p)}
+                      className={`relative flex-1 min-w-[60px] py-2.5 px-3 rounded-xl font-semibold text-[11px] tracking-[0.14em] transition-colors ${
+                        activePane === p
+                          ? "bg-[#1f2933] text-stone-100"
+                          : "text-stone-600 hover:text-stone-900 hover:bg-stone-100"
+                      }`}
+                    >
+                      <span>{p}</span>
+                    </button>
+                  ))}
+                </div>
               </nav>
 
               {/* Scope & rules */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm space-y-3">
+              <div className="bg-[#fcfaf6] p-4 rounded-2xl border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] space-y-3">
                 <div className="flex items-center gap-2 font-semibold text-[10px] tracking-widest text-slate-400 uppercase">
                   <Settings2 size={13} /> Scope & Rules
                 </div>
@@ -720,7 +732,7 @@ export default function App() {
               </div>
 
               {/* Consolidation thresholds */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm space-y-3">
+              <div className="bg-[#fcfaf6] p-4 rounded-2xl border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] space-y-3">
                 <div className="flex items-center gap-2 font-semibold text-[10px] tracking-widest text-slate-400 uppercase">
                   <Settings2 size={13} /> Consolidation
                 </div>
@@ -753,7 +765,7 @@ export default function App() {
               </div>
 
               {/* Storage type toggles */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm space-y-3">
+              <div className="bg-[#fcfaf6] p-4 rounded-2xl border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] space-y-3">
                 <div className="flex items-center gap-2 font-semibold text-[10px] tracking-widest text-slate-400 uppercase">
                   <Settings2 size={13} /> Storage Types
                 </div>
@@ -804,7 +816,7 @@ export default function App() {
               </div>
 
               {/* PROTECTED LINE BINS */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm space-y-3">
+              <div className="bg-[#fcfaf6] p-4 rounded-2xl border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] space-y-3">
                 <div className="flex items-center gap-2 font-semibold text-[10px] tracking-widest text-slate-400 uppercase">
                   <Lock size={13} /> Protected Line Bins
                 </div>
@@ -827,133 +839,118 @@ export default function App() {
             </aside>
 
             {/* MAIN CONTENT */}
-            <main className="col-span-12 lg:col-span-8 p-5 bg-slate-50/50 min-h-[720px]">
+            <main className="col-span-12 lg:col-span-8 p-5 bg-[#f7f2e8] min-h-[720px]">
               {activePane === "QUEUE" && (
                 <div className="space-y-5">
                   <div className="flex flex-col lg:flex-row gap-4 justify-between items-start">
                     <div className="flex gap-3 flex-wrap">
-                      <div className="bg-white p-3.5 rounded-xl border border-slate-200/60 shadow-sm text-center min-w-[80px]">
-                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Moves</div>
-                        <div className="text-2xl font-bold tabular-nums">{moves.length}</div>
-                      </div>
-                      <div className="bg-white p-3.5 rounded-xl border border-slate-200/60 shadow-sm text-center min-w-[80px]">
-                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Freed</div>
-                        <div className="text-2xl font-bold text-emerald-600 tabular-nums">{freedBins.length}</div>
-                      </div>
-                      {skipped.size > 0 && (
-                        <div className="bg-rose-50 p-3.5 rounded-xl border border-rose-200 shadow-sm text-center min-w-[80px]">
-                          <div className="text-[10px] font-semibold text-rose-400 uppercase tracking-wide">Skipped</div>
-                          <div className="text-2xl font-bold text-rose-600 tabular-nums">{skipped.size}</div>
-                        </div>
+                      <MetricCard label="Moves" value={moves.length} tone="console" />
+                      <MetricCard label="Freed" value={freedBins.length} tone="paper" />
+                      {ignoredMoves.size > 0 && (
+                        <MetricCard label="Ignored" value={ignoredMoves.size} tone="danger" />
                       )}
-                      <div className="bg-white p-3.5 rounded-xl border border-slate-200/60 shadow-sm min-w-[240px] grow">
-                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Freed bins</div>
-                        <div className="text-[11px] font-mono text-slate-500 truncate">{freedBins.join(", ") || "—"}</div>
-                      </div>
+                      <Card variant="paper" className="min-w-[280px] grow p-4">
+                        <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em] mb-1.5">Freed bins</div>
+                        <div className="text-[12px] font-mono text-stone-700 truncate">{freedBins.join(", ") || "—"}</div>
+                      </Card>
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
                       <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={15} />
-                        <input
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={15} />
+                        <Input
                           value={searchTerm}
                           onChange={(e) => setSearchTerm(e.target.value)}
                           placeholder="Filter queue…"
-                          className="w-full sm:w-64 pl-9 pr-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium shadow-sm placeholder:text-slate-300"
+                          variant="paper"
+                          className="w-full sm:w-64 pl-9"
                         />
                       </div>
-                      <button
+                      <Button
                         onClick={() => setHideCompleted(!hideCompleted)}
-                        className={`px-3.5 py-2 rounded-lg font-semibold text-xs border transition-colors shadow-sm ${
-                          hideCompleted ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-white border-slate-200 text-slate-500"
+                        variant={hideCompleted ? "secondary" : "outline"}
+                        className={`text-xs ${
+                          hideCompleted ? "bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200" : ""
                         }`}
                       >
                         {hideCompleted ? "Remaining" : "All"}
-                      </button>
+                      </Button>
                     </div>
                   </div>
 
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                    <div className="text-[11px] font-medium text-slate-400">
+                    <div className="text-[11px] font-medium text-stone-500">
                       Showing {filteredMoves.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filteredMoves.length)} of {filteredMoves.length}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-1.5 shadow-sm">
-                        <div className="text-[10px] font-semibold text-slate-400 uppercase">Rows</div>
+                      <div className="flex items-center gap-2 bg-[#fcfaf6] border border-stone-300 rounded-2xl px-3 py-2 shadow-[0_8px_20px_rgba(41,37,36,0.04)]">
+                        <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em]">Rows</div>
                         <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} className="bg-transparent text-sm font-medium outline-none">
                           {[12, 18, 24, 30, 40].map((n) => <option key={n} value={n}>{n}</option>)}
                         </select>
                       </div>
-                      <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-1.5 shadow-sm">
-                        <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-2.5 py-1 rounded-md font-semibold text-xs border border-slate-200 disabled:opacity-30 hover:bg-slate-50 transition-colors">Prev</button>
-                        <div className="text-sm font-semibold tabular-nums">{page} <span className="text-slate-300">/</span> {pageCount}</div>
-                        <button onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount} className="px-2.5 py-1 rounded-md font-semibold text-xs border border-slate-200 disabled:opacity-30 hover:bg-slate-50 transition-colors">Next</button>
+                      <div className="flex items-center gap-2 bg-[#fcfaf6] border border-stone-300 rounded-2xl px-3 py-2 shadow-[0_8px_20px_rgba(41,37,36,0.04)]">
+                        <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-xl font-semibold text-xs border border-stone-300 disabled:opacity-30 hover:bg-stone-100 transition-colors">Prev</button>
+                        <div className="text-sm font-semibold tabular-nums">{page} <span className="text-stone-300">/</span> {pageCount}</div>
+                        <button onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount} className="px-3 py-1 rounded-xl font-semibold text-xs border border-stone-300 disabled:opacity-30 hover:bg-stone-100 transition-colors">Next</button>
                       </div>
                     </div>
                   </div>
 
-                  <div className="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-slate-50 border-b border-slate-200 text-[10px] uppercase font-semibold tracking-wider text-slate-400">
-                        <tr>
-                          <th className="px-4 py-3">Status</th>
-                          <th className="px-4 py-3 text-center">Seq</th>
-                          <th className="px-4 py-3">Route</th>
-                          <th className="px-4 py-3">Material</th>
-                          <th className="px-4 py-3 text-right">PAL</th>
-                          <th className="px-4 py-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-medium">
+                  <div className="bg-[#fcfaf6] rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-[#ebe3d4] border-b border-stone-300 text-[10px] uppercase font-semibold tracking-[0.18em] text-stone-600 sticky top-0 z-10">
+                          <tr>
+                            <th className="px-4 py-3.5 font-medium text-stone-700">Status</th>
+                            <th className="px-4 py-3.5 text-center font-medium text-stone-700">Seq</th>
+                            <th className="px-4 py-3.5 font-medium text-stone-700">Route</th>
+                            <th className="px-4 py-3.5 font-medium text-stone-700">Material</th>
+                            <th className="px-4 py-3.5 text-right font-medium text-stone-700">PAL</th>
+                            <th className="px-4 py-3.5 text-right font-medium text-stone-700">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-stone-200 font-medium">
                         {visibleMoves.map((m) => {
                           const done = completed.has(m.id);
-                          const isSkipped = skipped.has(m.id);
-                          const skipInfo = isSkipped ? skipped.get(m.id) : null;
                           return (
                             <tr
                               key={m.id}
                               onClick={() => toggleDone(m.id)}
-                              className={`cursor-pointer transition-colors hover:bg-slate-50 ${isSkipped ? "bg-rose-50/50 opacity-50" : done ? "opacity-35" : ""}`}
+                              className={`cursor-pointer transition-colors hover:bg-[#f3ecdf] ${done ? "opacity-40" : ""}`}
                             >
                               <td className="px-4 py-3.5">
                                 <span className={`inline-block px-2 py-0.5 rounded-md text-[9px] font-semibold border ${
-                                  isSkipped ? "bg-rose-50 text-rose-700 border-rose-200" :
-                                  done ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
-                                  "bg-slate-50 text-slate-400 border-slate-200"
+                                  done ? "bg-emerald-50 text-emerald-800 border-emerald-200" :
+                                  "bg-stone-100 text-stone-600 border-stone-200"
                                 }`}>
-                                  {isSkipped ? "SKIPPED" : done ? "DONE" : "PENDING"}
+                                  {done ? "DONE" : "PENDING"}
                                 </span>
                               </td>
-                              <td className="px-4 py-3.5 text-center font-mono text-slate-400 text-xs">{m.id}</td>
+                              <td className="px-4 py-3.5 text-center font-mono text-stone-500 text-xs">{m.id}</td>
                               <td className="px-4 py-3.5 font-mono text-xs">
-                                <span className="text-slate-500">{m.from}</span>
-                                <ArrowRight className="inline mx-1.5 text-indigo-400" size={13} />
-                                <span className="text-indigo-600 font-semibold">{m.to}</span>
+                                <span className="text-stone-600">{m.from}</span>
+                                <ArrowRight className="inline mx-1.5 text-amber-600" size={13} />
+                                <span className="text-slate-900 font-semibold">{m.to}</span>
                               </td>
                               <td className="px-4 py-3.5 min-w-[200px]">
                                 <div className="text-slate-800 font-semibold">{m.materialId}</div>
-                                <div className="text-[10px] text-slate-400 truncate max-w-xs">{m.materialDesc}</div>
-                                {skipInfo && (
-                                  <div className="text-[10px] text-rose-600 font-semibold mt-1 truncate max-w-xs">
-                                    <AlertTriangle className="inline mr-1" size={10} />
-                                    {skipInfo.reason}
-                                  </div>
-                                )}
+                                <div className="text-[10px] text-stone-500 truncate max-w-xs">{m.materialDesc}</div>
                               </td>
                               <td className="px-4 py-3.5 text-right tabular-nums text-base font-semibold">{m.qty}</td>
                               <td className="px-4 py-3.5 text-right">
                                 <div className="inline-flex items-center gap-1">
                                   <button
                                     onClick={(ev) => { ev.stopPropagation(); copyText(`${m.from}\t${m.to}\t${m.materialId}\t${m.qty}`); }}
-                                    className="inline-flex items-center justify-center p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-400 hover:text-slate-600 transition-colors"
+                                    className="inline-flex items-center justify-center p-1.5 rounded-xl border border-stone-300 hover:bg-stone-100 text-stone-500 hover:text-stone-700 transition-colors"
                                     title="Copy row"
                                   >
                                     <Copy size={14} />
                                   </button>
-                                  {!done && !isSkipped && (
+                                  {!done && (
                                     <button
-                                      onClick={(ev) => { ev.stopPropagation(); openSkipModal(m); }}
-                                      className="inline-flex items-center justify-center p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-400 hover:text-rose-600 transition-colors"
-                                      title="Can't do this move"
+                                      onClick={(ev) => { ev.stopPropagation(); openIgnoreModal(m); }}
+                                      className="inline-flex items-center justify-center p-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-500 hover:text-rose-700 transition-colors"
+                                      title="Ignore this move and rebuild the plan"
                                     >
                                       <Ban size={14} />
                                     </button>
@@ -974,35 +971,41 @@ export default function App() {
                     </table>
                   </div>
                 </div>
+                </div>
               )}
 
               {activePane === "PUTAWAY" && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                  <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm space-y-4">
-                    <div className="font-bold text-base">Inbound Finder</div>
+                  <Card variant="paper" className="p-5 space-y-4">
+                    <div>
+                      <div className="font-bold text-lg text-slate-900">Inbound Finder</div>
+                      <Eyebrow className="text-stone-500 mt-1">Putaway Recommendation</Eyebrow>
+                    </div>
                     <div className="space-y-3">
                       <div>
-                        <div className="text-[10px] font-semibold text-slate-500 mb-1 uppercase tracking-wide">Material # or Description</div>
-                        <input
+                        <div className="text-[10px] font-semibold text-stone-600 mb-1 uppercase tracking-[0.18em]">Material # or Description</div>
+                        <Input
                           value={finderQuery}
                           onChange={(e) => setFinderQuery(e.target.value)}
-                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 font-mono text-sm font-medium placeholder:text-slate-300"
+                          variant="paper"
+                          className="font-mono"
                           placeholder="e.g. 100234"
                         />
                       </div>
                       <div>
-                        <div className="text-[10px] font-semibold text-slate-500 mb-1 uppercase tracking-wide">Required PAL</div>
-                        <input
+                        <div className="text-[10px] font-semibold text-stone-600 mb-1 uppercase tracking-[0.18em]">Required PAL</div>
+                        <Input
                           value={finderQty}
                           onChange={(e) => setFinderQty(e.target.value)}
-                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 font-mono text-sm font-medium"
+                          variant="paper"
+                          className="font-mono"
                         />
                       </div>
-                      <label className="flex items-center gap-2 text-xs font-medium">
+                      <label className="flex items-center gap-2 text-xs font-medium text-stone-700 rounded-2xl border border-stone-300 bg-[#f5efe4] px-4 py-3">
                         <input type="checkbox" checked={allowABPutaway} onChange={(e) => setAllowABPutaway(e.target.checked)} className="rounded border-slate-300 text-indigo-600" />
                         Allow A/B/C rows (override production reserve)
                       </label>
-                      <button
+                      <Button
                         onClick={() => {
                           const res = findBestBin({
                             query: finderQuery, qtyNeeded: finderQty, stockRows,
@@ -1012,45 +1015,48 @@ export default function App() {
                           setFinderResult(res);
                         }}
                         disabled={stockRows.length === 0}
-                        className={`w-full font-semibold py-2.5 rounded-lg transition-colors ${
-                          stockRows.length ? "bg-slate-900 text-white hover:bg-slate-800 shadow-sm" : "bg-slate-100 text-slate-400 cursor-not-allowed"
-                        }`}
+                        variant="console"
+                        size="lg"
+                        className={`w-full ${stockRows.length ? "" : "bg-stone-200 text-stone-400 shadow-none hover:bg-stone-200"}`}
                       >
                         Search Optimal Bin
-                      </button>
+                      </Button>
                     </div>
-                  </div>
+                  </Card>
 
                   {finderResult && (
-                    <div className="bg-slate-900 text-white p-5 rounded-xl shadow-lg space-y-4">
-                      <div className="font-bold text-base">Results</div>
+                    <Card variant="console" className="p-5 space-y-4">
+                      <div>
+                        <div className="font-bold text-lg">Results</div>
+                        <Eyebrow className="text-stone-400 mt-1">Best Available Bin</Eyebrow>
+                      </div>
                       {!finderResult.ok ? (
-                        <div className="text-rose-300 font-medium">{finderResult.reason}</div>
+                        <div className="text-rose-300 font-medium rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3">{finderResult.reason}</div>
                       ) : (
                         <div className="space-y-5">
                           <div className="flex items-end justify-between border-b border-white/10 pb-4">
                             <div className="min-w-0">
-                              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Recommended</div>
-                              <div className="text-3xl font-bold text-emerald-400 font-mono tracking-tight">{finderResult.best.bin}</div>
-                              <div className="text-[10px] text-slate-400 font-medium mt-1.5">{finderResult.materialId}</div>
-                              <div className="text-xs text-slate-300 truncate">{finderResult.materialDesc}</div>
+                              <div className="text-[10px] font-semibold text-stone-400 uppercase tracking-[0.18em]">Recommended</div>
+                              <div className="text-4xl font-bold text-[#f0b56a] font-mono tracking-tight">{finderResult.best.bin}</div>
+                              <div className="text-[10px] text-stone-400 font-medium mt-1.5">{finderResult.materialId}</div>
+                              <div className="text-xs text-stone-300 truncate">{finderResult.materialDesc}</div>
                             </div>
-                            <button onClick={() => copyText(finderResult.best.bin)} className="p-2.5 bg-white/5 rounded-lg hover:bg-white/10 border border-white/10 transition-colors" title="Copy recommended bin">
+                            <button onClick={() => copyText(finderResult.best.bin)} className="p-2.5 bg-white/5 rounded-xl hover:bg-white/10 border border-white/10 transition-colors" title="Copy recommended bin">
                               <Copy size={18} />
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Alternatives</div>
+                            <div className="text-[10px] font-semibold text-stone-400 uppercase tracking-[0.18em]">Alternatives</div>
                             {finderResult.top.slice(1, 5).map((c) => (
-                              <button key={c.bin} onClick={() => copyText(c.bin)} className="w-full flex justify-between items-center font-mono text-xs p-2 rounded-lg bg-white/5 border border-white/5 hover:bg-white/10 transition-colors">
+                              <button key={c.bin} onClick={() => copyText(c.bin)} className="w-full flex justify-between items-center font-mono text-xs p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors">
                                 <span>{c.bin}</span>
-                                <span className="text-slate-400">{c.free} free</span>
+                                <span className="text-stone-400">{c.free} free</span>
                               </button>
                             ))}
                           </div>
                         </div>
                       )}
-                    </div>
+                    </Card>
                   )}
                 </div>
               )}
@@ -1059,9 +1065,9 @@ export default function App() {
                 <div className="space-y-5">
                   <div className="flex flex-col lg:flex-row gap-4 justify-between items-start">
                     <div>
-                      <div className="font-bold text-base">Bin Management</div>
-                      <div className="text-xs text-slate-400 font-medium mt-0.5">Enable/disable bins and manage custom capacities.</div>
-                      <div className="text-sm font-medium text-slate-600 mt-1.5">
+                      <div className="font-bold text-lg text-slate-900">Bin Management</div>
+                      <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mt-1">Capacity and Availability</div>
+                      <div className="text-sm font-medium text-stone-700 mt-2">
                         {disabledBins.size > 0 || Object.keys(capOverrides).length > 0 ? (
                           <>{disabledBins.size} disabled {disabledBins.size !== 1 ? "bins" : "bin"} · {Object.keys(capOverrides).length} override{Object.keys(capOverrides).length !== 1 ? "s" : ""}</>
                         ) : "0 disabled · 0 overrides"}
@@ -1069,18 +1075,18 @@ export default function App() {
                     </div>
                     <div className="flex gap-2 items-center flex-col sm:flex-row w-full lg:w-auto">
                       <div className="relative flex-1 sm:flex-auto">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={15} />
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={15} />
                         <input
                           value={binMgmtSearch}
                           onChange={(e) => setBinMgmtSearch(e.target.value)}
                           placeholder="Filter bins…"
-                          className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium shadow-sm sm:w-52 placeholder:text-slate-300"
+                          className="w-full pl-9 pr-4 py-2.5 rounded-2xl border border-stone-300 bg-[#fcfaf6] text-sm font-medium shadow-[0_8px_20px_rgba(41,37,36,0.04)] sm:w-52 placeholder:text-stone-400"
                         />
                       </div>
                       {(disabledBins.size > 0 || Object.keys(capOverrides).length > 0) && (
                         <button
                           onClick={() => { setDisabledBins(new Set()); setCapOverrides({}); }}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 font-semibold text-xs hover:bg-rose-100 transition-colors whitespace-nowrap"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-rose-50 text-rose-700 border border-rose-200 font-semibold text-xs hover:bg-rose-100 transition-colors whitespace-nowrap"
                         >
                           <RotateCcw size={13} /> Reset All
                         </button>
@@ -1088,7 +1094,7 @@ export default function App() {
                       {stockRows.length > 0 && (
                         <button
                           onClick={exportBinCapacities}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-500 text-white font-semibold text-xs hover:bg-indigo-400 transition-colors whitespace-nowrap shadow-sm"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-[#1f2933] text-stone-100 font-semibold text-xs hover:bg-[#2a3641] transition-colors whitespace-nowrap shadow-[0_12px_24px_rgba(31,41,51,0.18)]"
                         >
                           <Download size={13} /> Export Capacities
                         </button>
@@ -1097,7 +1103,7 @@ export default function App() {
                   </div>
 
                   {stockRows.length === 0 ? (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+                    <div className="bg-amber-50 border border-amber-200 rounded-[24px] p-6 text-center">
                       <div className="font-semibold text-amber-800 mb-1">No SAP data loaded</div>
                       <div className="text-xs text-amber-600 font-medium">Load a SAP export to manage bins.</div>
                     </div>
@@ -1111,10 +1117,10 @@ export default function App() {
                         .sort((a, b) => a.localeCompare(b));
 
                       return (
-                        <div className="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden">
+                        <div className="bg-[#fcfaf6] rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-hidden">
                           <div className="max-h-[560px] overflow-y-auto">
                             <table className="w-full text-left text-sm">
-                              <thead className="bg-slate-50 border-b border-slate-200 text-[10px] uppercase font-semibold tracking-wider text-slate-400 sticky top-0 z-10">
+                              <thead className="bg-[#ebe3d4] border-b border-stone-300 text-[10px] uppercase font-semibold tracking-[0.18em] text-stone-600 sticky top-0 z-10">
                                 <tr>
                                   <th className="px-4 py-3 text-center">Enabled</th>
                                   <th className="px-4 py-3">Bin ID</th>
@@ -1125,7 +1131,7 @@ export default function App() {
                                   <th className="px-4 py-3 text-right">Effective</th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-100 font-medium">
+                              <tbody className="divide-y divide-stone-200 font-medium">
                                 {sorted.map((binId) => {
                                   const { rowKey } = parseBin(binId);
                                   const stock = binSt[binId]?.totalQty || 0;
@@ -1133,7 +1139,7 @@ export default function App() {
                                   const hasOverride = Object.prototype.hasOwnProperty.call(capOverrides, binId);
                                   const isDisabled = disabledBins.has(binId);
                                   const eff = hasOverride ? capOverrides[binId] : calcCap;
-                                  const rowClasses = isDisabled ? "opacity-50 bg-rose-50/50" : hasOverride ? "bg-indigo-50/50" : "";
+                                  const rowClasses = isDisabled ? "opacity-50 bg-rose-50/50" : hasOverride ? "bg-amber-50/50" : "hover:bg-[#f3ecdf]";
                                   return (
                                     <tr key={binId} className={`${rowClasses} transition-colors`}>
                                       <td className="px-4 py-2 text-center">
@@ -1152,9 +1158,9 @@ export default function App() {
                                         />
                                       </td>
                                       <td className="px-4 py-2 font-mono text-slate-800 text-xs">{binId}</td>
-                                      <td className="px-4 py-2 text-slate-400 text-xs">{rowKey}</td>
+                                      <td className="px-4 py-2 text-stone-500 text-xs">{rowKey}</td>
                                       <td className="px-4 py-2 text-right tabular-nums">{stock}</td>
-                                      <td className="px-4 py-2 text-right tabular-nums text-slate-400">{Math.floor(calcCap)}</td>
+                                      <td className="px-4 py-2 text-right tabular-nums text-stone-500">{Math.floor(calcCap)}</td>
                                       <td className="px-4 py-2 text-right">
                                         <select
                                           value={hasOverride ? capOverrides[binId] : ""}
@@ -1167,13 +1173,13 @@ export default function App() {
                                               if (!isNaN(num) && num >= 0) setCapOverrides((prev) => ({ ...prev, [binId]: num }));
                                             }
                                           }}
-                                          className="w-20 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-right font-mono text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+                                          className="w-20 rounded-xl border border-stone-300 bg-[#f5efe4] px-2 py-1.5 text-right font-mono text-sm font-medium outline-none focus:ring-2 focus:ring-amber-500"
                                         >
                                           <option value="">Default</option>
                                           {Array.from({ length: 44 }, (_, i) => <option key={i} value={i}>{i}</option>)}
                                         </select>
                                       </td>
-                                      <td className={`px-4 py-2 text-right tabular-nums font-semibold ${hasOverride ? "text-indigo-600" : ""}`}>
+                                      <td className={`px-4 py-2 text-right tabular-nums font-semibold ${hasOverride ? "text-amber-700" : ""}`}>
                                         {eff}
                                       </td>
                                     </tr>
@@ -1192,51 +1198,51 @@ export default function App() {
               {activePane === "ANALYTICS" && (
                 <div className="space-y-5">
                   {!moves.length || !analytics ? (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-10 text-center">
+                    <div className="bg-amber-50 border border-amber-200 rounded-[24px] p-10 text-center">
                       <div className="font-semibold text-amber-800 mb-1">No consolidation data</div>
                       <div className="text-xs text-amber-600 font-medium">Run a consolidation first to see analytics.</div>
                     </div>
                   ) : (
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
-                        <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-center">
-                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Total Moves</div>
-                          <div className="text-2xl font-bold text-indigo-600 tabular-nums">{analytics.totalMoves}</div>
+                        <div className="bg-[#1f2933] p-4 rounded-[24px] border border-slate-800 shadow-[0_14px_34px_rgba(31,41,51,0.18)] text-center">
+                          <div className="text-[10px] font-semibold text-stone-300 uppercase tracking-[0.18em] mb-1">Total Moves</div>
+                          <div className="text-3xl font-bold text-stone-50 tabular-nums">{analytics.totalMoves}</div>
                         </div>
-                        <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-center">
-                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Bins Freed</div>
-                          <div className="text-2xl font-bold text-emerald-600 tabular-nums">{analytics.totalFreedBins}</div>
+                        <div className="bg-[#fcfaf6] p-4 rounded-[24px] border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] text-center">
+                          <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em] mb-1">Bins Freed</div>
+                          <div className="text-3xl font-bold text-emerald-700 tabular-nums">{analytics.totalFreedBins}</div>
                         </div>
-                        <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-center">
-                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Materials Moved</div>
-                          <div className="text-2xl font-bold text-violet-600 tabular-nums">{analytics.uniqueMaterialsMoved}</div>
+                        <div className="bg-[#fcfaf6] p-4 rounded-[24px] border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] text-center">
+                          <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em] mb-1">Materials Moved</div>
+                          <div className="text-3xl font-bold text-slate-900 tabular-nums">{analytics.uniqueMaterialsMoved}</div>
                         </div>
-                        <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-center">
-                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">PAL Moved</div>
-                          <div className="text-2xl font-bold text-amber-600 tabular-nums">{analytics.totalPALMoved.toFixed(1)}</div>
+                        <div className="bg-[#fcfaf6] p-4 rounded-[24px] border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] text-center">
+                          <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em] mb-1">PAL Moved</div>
+                          <div className="text-3xl font-bold text-amber-700 tabular-nums">{analytics.totalPALMoved.toFixed(1)}</div>
                         </div>
-                        <div className="bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm text-center">
-                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Consolidated</div>
-                          <div className="text-2xl font-bold text-slate-800 tabular-nums">{analytics.materialsConsolidated}</div>
+                        <div className="bg-[#fcfaf6] p-4 rounded-[24px] border border-stone-300 shadow-[0_10px_24px_rgba(41,37,36,0.05)] text-center">
+                          <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-[0.18em] mb-1">Consolidated</div>
+                          <div className="text-3xl font-bold text-slate-800 tabular-nums">{analytics.materialsConsolidated}</div>
                         </div>
                       </div>
 
                       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-                        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm overflow-x-auto">
+                        <div className="bg-[#fcfaf6] p-5 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-x-auto">
                           <SimpleBarChart
                             title="Moves by Source Row"
                             data={Object.entries(analytics.movesBySourceRow).sort((a, b) => b[1] - a[1]).map(([row, count]) => ({ label: row, value: count }))}
                             color="#ef4444"
                           />
                         </div>
-                        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm overflow-x-auto">
+                        <div className="bg-[#fcfaf6] p-5 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-x-auto">
                           <SimpleBarChart
                             title="Moves by Target Row"
                             data={Object.entries(analytics.movesByTargetRow).sort((a, b) => b[1] - a[1]).map(([row, count]) => ({ label: row, value: count }))}
                             color="#10b981"
                           />
                         </div>
-                        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm">
+                        <div className="bg-[#fcfaf6] p-5 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)]">
                           <SimpleBarChart
                             title="PAL Moved by Source Row"
                             data={Object.entries(analytics.palMovedByRow).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([row, pal]) => ({ label: row, value: pal }))}
@@ -1246,58 +1252,57 @@ export default function App() {
                       </div>
 
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm overflow-x-auto">
+                        <div className="bg-[#fcfaf6] p-5 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-x-auto">
                           <SimpleBarChart
                             title="PAL Moved by Row"
                             data={Object.entries(analytics.palMovedByRow).sort((a, b) => b[1] - a[1]).map(([row, pal]) => ({ label: row, value: pal }))}
                             color="#8b5cf6"
                           />
                         </div>
-                        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-sm">
-                          <div className="font-semibold text-sm text-slate-500 mb-4">Capacity Utilization</div>
+                        <div className="bg-[#fcfaf6] p-5 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)]">
+                          <div className="font-semibold text-sm text-stone-700 mb-4 uppercase tracking-[0.16em]">Capacity Utilization</div>
                           <div className="space-y-5">
                             <div>
                               <div className="flex justify-between text-xs mb-2">
                                 <span className="font-medium">Before Consolidation</span>
-                                <span className="font-medium text-slate-400">{analytics.capacityUtilizationBefore}%</span>
+                                <span className="font-medium text-stone-500">{analytics.capacityUtilizationBefore}%</span>
                               </div>
-                              {/* FIX: h-full on inner div so it fills the h-4 container */}
-                              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
-                                <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${analytics.capacityUtilizationBefore}%` }} />
+                              <div className="w-full bg-stone-200 rounded-full h-3 overflow-hidden">
+                                <div className="h-full bg-[#1f2933] rounded-full transition-all" style={{ width: `${analytics.capacityUtilizationBefore}%` }} />
                               </div>
-                              <div className="text-[10px] text-slate-400 mt-1">
+                              <div className="text-[10px] text-stone-500 mt-1">
                                 {analytics.usedCapacityBefore.toFixed(1)} / {analytics.totalCapacityBefore.toFixed(1)} PAL
                               </div>
                             </div>
                             <div>
                               <div className="flex justify-between text-xs mb-2">
                                 <span className="font-medium">After Consolidation</span>
-                                <span className="font-medium text-slate-400">{analytics.capacityUtilizationAfter}%</span>
+                                <span className="font-medium text-stone-500">{analytics.capacityUtilizationAfter}%</span>
                               </div>
-                              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
-                                <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${analytics.capacityUtilizationAfter}%` }} />
+                              <div className="w-full bg-stone-200 rounded-full h-3 overflow-hidden">
+                                <div className="h-full bg-[#d97706] rounded-full transition-all" style={{ width: `${analytics.capacityUtilizationAfter}%` }} />
                               </div>
-                              <div className="text-[10px] text-slate-400 mt-1">
+                              <div className="text-[10px] text-stone-500 mt-1">
                                 {analytics.usedCapacityAfter.toFixed(1)} / {analytics.totalCapacityAfter.toFixed(1)} PAL
                               </div>
                             </div>
-                            <div className="pt-3 border-t border-slate-100">
+                            <div className="pt-3 border-t border-stone-200">
                               <div className="flex justify-between">
-                                <span className="font-semibold text-slate-500 text-sm">Capacity Freed</span>
-                                <span className="font-bold text-amber-600">+{analytics.capacityFreed.toFixed(1)} PAL</span>
+                                <span className="font-semibold text-stone-700 text-sm">Capacity Freed</span>
+                                <span className="font-bold text-amber-700">+{analytics.capacityFreed.toFixed(1)} PAL</span>
                               </div>
                             </div>
                           </div>
                         </div>
                       </div>
 
-                      <div className="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden">
-                        <div className="p-4 border-b border-slate-100">
+                      <div className="bg-[#fcfaf6] rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)] overflow-hidden">
+                        <div className="p-4 border-b border-stone-200">
                           <div className="font-bold text-base">Top Materials by PAL Moved</div>
                         </div>
                         <div className="overflow-x-auto">
                           <table className="w-full text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-200 text-[10px] uppercase font-semibold tracking-wider text-slate-400">
+                            <thead className="bg-[#ebe3d4] border-b border-stone-300 text-[10px] uppercase font-semibold tracking-[0.18em] text-stone-600">
                               <tr>
                                 <th className="px-4 py-3 text-left">Material ID</th>
                                 <th className="px-4 py-3 text-left">Description</th>
@@ -1305,13 +1310,13 @@ export default function App() {
                                 <th className="px-4 py-3 text-right">%</th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-100 font-medium">
+                            <tbody className="divide-y divide-stone-200 font-medium">
                               {analytics.topMaterialsByPAL.map((item, idx) => (
-                                <tr key={idx} className={idx < 3 ? "bg-amber-50/50" : ""}>
+                                <tr key={idx} className={idx < 3 ? "bg-amber-50/50" : "hover:bg-[#f3ecdf]"}>
                                   <td className="px-4 py-2.5 font-mono text-xs">{item.materialId}</td>
-                                  <td className="px-4 py-2.5 text-slate-500 truncate max-w-md">{item.materialDesc || ""}</td>
+                                  <td className="px-4 py-2.5 text-stone-600 truncate max-w-md">{item.materialDesc || ""}</td>
                                   <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{item.totalPAL.toFixed(1)}</td>
-                                  <td className="px-4 py-2.5 text-right tabular-nums text-slate-400">
+                                  <td className="px-4 py-2.5 text-right tabular-nums text-stone-500">
                                     {analytics.totalPALMoved > 0 ? ((item.totalPAL / analytics.totalPALMoved) * 100).toFixed(1) : "0.0"}%
                                   </td>
                                 </tr>
@@ -1324,19 +1329,19 @@ export default function App() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={exportAnalyticsToExcel}
-                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-indigo-500 text-white rounded-lg font-semibold text-sm hover:bg-indigo-400 transition-colors shadow-sm"
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-[#1f2933] text-stone-100 rounded-2xl font-semibold text-sm hover:bg-[#2a3641] transition-colors shadow-[0_12px_24px_rgba(31,41,51,0.18)]"
                         >
                           <Download size={15} /> Export Analytics
                         </button>
                         <button
                           onClick={generatePDFReport}
-                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-rose-500 text-white rounded-lg font-semibold text-sm hover:bg-rose-400 transition-colors shadow-sm"
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-[#d97706] text-white rounded-2xl font-semibold text-sm hover:bg-[#b85f05] transition-colors shadow-[0_12px_24px_rgba(217,119,6,0.2)]"
                         >
                           <Download size={15} /> PDF Report
                         </button>
                         <button
                           onClick={() => initialBinState && finalBinState && setShowBeforeAfter(true)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-500 text-white rounded-lg font-semibold text-sm hover:bg-emerald-400 transition-colors shadow-sm"
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-700 text-white rounded-2xl font-semibold text-sm hover:bg-emerald-600 transition-colors shadow-[0_12px_24px_rgba(4,120,87,0.18)]"
                         >
                           <RefreshCcw size={15} /> Before / After
                         </button>
@@ -1351,7 +1356,7 @@ export default function App() {
                   <div className="flex justify-end">
                     <button
                       onClick={openMapInSeparateWindow}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-colors shadow-sm"
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-2xl bg-[#1f2933] text-stone-100 font-semibold text-xs hover:bg-[#2a3641] transition-colors shadow-[0_12px_24px_rgba(31,41,51,0.18)]"
                     >
                       Open in Separate Window
                     </button>
@@ -1361,9 +1366,10 @@ export default function App() {
               )}
 
               {activePane === "GUIDE" && (
-                <div className="bg-white p-6 rounded-xl border border-slate-200/60 shadow-sm">
-                  <div className="font-bold text-lg mb-3">Operations Guide</div>
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-600">{USER_GUIDE}</pre>
+                <div className="bg-[#fcfaf6] p-6 rounded-[24px] border border-stone-300 shadow-[0_14px_34px_rgba(41,37,36,0.07)]">
+                  <div className="font-bold text-lg mb-1 text-slate-900">Operations Guide</div>
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-4">Reference Notes</div>
+                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-stone-700">{USER_GUIDE}</pre>
                 </div>
               )}
             </main>
@@ -1385,75 +1391,91 @@ export default function App() {
       />
 
       {/* Skip reason modal */}
-      {skipModalMove && (
+      {ignoreModalMove && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-950/60 backdrop-blur-sm"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setSkipModalMove(null); }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setIgnoreModalMove(null); }}
         >
-          <div className="bg-white rounded-xl w-full max-w-lg overflow-hidden border border-slate-200 shadow-2xl">
-            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <div className="flex items-center gap-3 text-left">
-                <div className="h-9 w-9 rounded-lg bg-rose-500 flex items-center justify-center text-white">
-                  <Ban size={18} />
-                </div>
-                <div>
-                  <div className="font-bold text-base tracking-tight text-slate-900">Move Not Doable</div>
-                  <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Report &amp; skip this move</div>
-                </div>
-              </div>
-              <button onClick={() => setSkipModalMove(null)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-700" aria-label="Close">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              {skipSubmitStatus === "SUCCEEDED" ? (
-                <div className="py-8 text-center space-y-3">
-                  <div className="h-14 w-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
-                    <CheckCircle size={28} />
-                  </div>
-                  <div className="font-bold text-emerald-800 text-lg">Move skipped</div>
-                  <p className="text-sm text-emerald-600 font-medium">Report sent to the team.</p>
-                </div>
-              ) : (
-                <form onSubmit={handleSkipSubmit} className="space-y-4 text-left">
-                  <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-1">
-                    <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Move Details</div>
-                    <div className="font-mono font-medium text-sm">
-                      #{skipModalMove.id} &nbsp; {skipModalMove.from}
-                      <ArrowRight className="inline mx-1.5 text-indigo-400" size={13} />
-                      {skipModalMove.to}
-                    </div>
-                    <div className="text-xs text-slate-600 font-medium">{skipModalMove.materialId}</div>
-                    <div className="text-[10px] text-slate-400 truncate">{skipModalMove.materialDesc}</div>
-                    <div className="text-xs font-medium text-slate-500">{skipModalMove.qty} PAL</div>
+          <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden border border-white/20 shadow-2xl shadow-slate-900/20">
+            <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-rose-50 to-pink-50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-600 shadow-lg">
+                    <Ban size={24} />
                   </div>
                   <div>
-                    <textarea
-                      value={skipReason}
-                      onChange={(e) => setSkipReason(e.target.value)}
-                      required
-                      placeholder="e.g. Bin count doesn't match SAP — expected 5 PAL, found 3"
-                      className="w-full h-28 p-4 rounded-lg border border-slate-200 bg-slate-50 font-medium text-sm outline-none focus:ring-2 focus:ring-rose-500 transition resize-none text-slate-700 placeholder:text-slate-300"
-                    />
+                    <div className="font-bold text-lg tracking-tight text-slate-900">Ignore Move</div>
+                    <div className="text-sm text-slate-500 font-medium">Exclude this route and rebuild the plan</div>
                   </div>
-                  {skipSubmitStatus === "ERROR" && (
-                    <p className="text-xs text-rose-600 font-medium bg-rose-50 p-2 rounded-lg border border-rose-100">
-                      Failed to send report. Please try again.
-                    </p>
-                  )}
+                </div>
+                <button onClick={() => setIgnoreModalMove(null)} className="p-2 hover:bg-white/50 rounded-lg transition-colors text-slate-400 hover:text-slate-700" aria-label="Close">
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="p-6 space-y-5">
+              <form onSubmit={handleIgnoreMove} className="space-y-5">
+                <div className="bg-white rounded-xl border border-slate-200/60 p-5 space-y-3 shadow-sm">
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Move Details</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                      <div className="text-xs text-slate-400 font-medium mb-1">Material</div>
+                      <div className="font-mono font-semibold text-slate-800">{ignoreModalMove.materialId}</div>
+                    </div>
+                    <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                      <div className="text-xs text-slate-400 font-medium mb-1">Quantity</div>
+                      <div className="font-mono font-semibold text-slate-800">{ignoreModalMove.qty} PAL</div>
+                    </div>
+                  </div>
+                  <div className="bg-gradient-to-r from-slate-50 to-slate-100 rounded-lg p-4 border border-slate-200">
+                    <div className="text-xs text-slate-400 font-medium mb-2">Route</div>
+                    <div className="flex items-center justify-between bg-white rounded-lg p-3 border border-slate-200">
+                      <span className="font-mono font-medium text-slate-600">{ignoreModalMove.from}</span>
+                      <ArrowRight className="text-slate-400 mx-2" size={20} />
+                      <span className="font-mono font-medium text-slate-600">{ignoreModalMove.to}</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                    <div className="text-xs text-slate-400 font-medium mb-1">Description</div>
+                    <div className="text-sm text-slate-600">{ignoreModalMove.materialDesc}</div>
+                  </div>
+                </div>
+                <div className="bg-amber-50/50 border border-amber-200/60 rounded-xl p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-2 h-2 bg-amber-400 rounded-full mt-1.5 flex-shrink-0"></div>
+                    <div className="text-sm text-amber-700">
+                      This will rebuild the plan from the current SAP snapshot and forbid this exact route for this material. The material can still appear in other moves.
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-600 mb-2">Reason for ignoring (optional)</label>
+                  <textarea
+                    value={ignoreReason}
+                    onChange={(e) => setIgnoreReason(e.target.value)}
+                    placeholder="Optional note, e.g. keep this target row open for production"
+                    className="w-full h-28 p-4 rounded-xl border border-slate-200 bg-slate-50 font-medium text-sm outline-none focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500/50 transition-all resize-none text-slate-700 placeholder:text-slate-400 shadow-sm"
+                  />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIgnoreModalMove(null)}
+                    className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 font-semibold hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
                   <button
                     type="submit"
-                    disabled={skipSubmitStatus === "SUBMITTING" || !skipReason.trim()}
-                    className="w-full py-3 rounded-lg bg-rose-500 text-white font-semibold hover:bg-rose-400 disabled:opacity-30 transition-colors shadow-sm flex items-center justify-center gap-2"
+                    className="flex-1 py-3 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 text-white font-semibold hover:shadow-lg hover:shadow-rose-500/30 transition-all transform hover:-translate-y-0.5"
                   >
-                    {skipSubmitStatus === "SUBMITTING" ? (
-                      <><Loader2 className="animate-spin" size={16} /> Sending…</>
-                    ) : (
-                      <><Ban size={16} /> Skip &amp; Notify</>
-                    )}
+                    <div className="flex items-center justify-center gap-2">
+                      <Ban size={18} />
+                      <span>Ignore Move & Rebuild</span>
+                    </div>
                   </button>
-                </form>
-              )}
+                </div>
+              </form>
             </div>
           </div>
         </div>

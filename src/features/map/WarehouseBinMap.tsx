@@ -100,9 +100,9 @@ type WarehouseColumn =
     };
 
 const NORMAL_SIDE_SUFFIXES = new Set(["07", "13", "19", "25", "31", "37", "43"]);
-const B_SIDE_BINS = new Set(["BS6", "B09", "B15", "B21", "B27", "B33", "B39"]);
-const H_SIDE_BINS = new Set(["HM03", "H09", "H15", "H21", "H27", "H33", "H39"]);
-const HH_SIDE_BINS = new Set(["HM03", "HH09", "HH15", "HH21", "HH27", "HH33", "HH39"]);
+const B_SIDE_BINS = new Set(["BS6", "B09", "B15", "B21", "B27", "B33", "B39", "B42"]);
+const H_SIDE_BINS = new Set(["HM03", "H09", "H15", "H21", "H27", "H33", "H39", "H43"]);
+const HH_SIDE_BINS = new Set(["HM03", "HH09", "HH15", "HH21", "HH27", "HH33", "HH39", "HH43"]);
 
 const REGULAR_CAPACITY: Record<string, number> = {
   A: 43,
@@ -168,11 +168,11 @@ function buildBRowBins(): string[] {
 }
 
 function buildHRowBins(): string[] {
-  return makeRange("H", 2, 41);
+  return makeRange("H", 2, 47);
 }
 
 function buildHHRowBins(): string[] {
-  return makeRange("HH", 2, 41);
+  return makeRange("HH", 2, 47);
 }
 
 function buildJRowBins(): string[] {
@@ -186,9 +186,9 @@ const D_ALIGNED = makeRange("D", 2, 39);
 const E_ALIGNED = makeRange("E", 2, 39);
 const F_ALIGNED = makeRange("F", 2, 47);
 const G_ALIGNED = makeRange("G", 2, 47);
-const H_ALIGNED = [...makeRange("H", 2, 4), null, null, null, null, ...makeRange("H", 5, 41)];
-const HM_ALIGNED = [null, null, null, "HM01", "HM02", "HM03", "HM04", ...Array(37).fill(null)];
-const HH_ALIGNED = [...makeRange("HH", 2, 4), null, null, null, null, ...makeRange("HH", 5, 41)];
+const H_ALIGNED = [...makeRange("H", 2, 4), null, null, null, null, ...makeRange("H", 5, 47)];
+const HM_ALIGNED = [null, null, null, "HM01", "HM02", "HM03", "HM04", ...Array(43).fill(null)];
+const HH_ALIGNED = [...makeRange("HH", 2, 4), null, null, null, null, ...makeRange("HH", 5, 47)];
 const II_ALIGNED = makeRange("II", 2, 47);
 const I_ALIGNED = makeRange("I", 2, 47);
 const J_PRE_ROW = "J01";
@@ -611,26 +611,20 @@ function matchesSummary(summary: BinSummary, query: string): boolean {
 }
 
 function getBinButtonClass(summary: BinSummary, selected: boolean, matched: boolean): string {
-  const ratio = summary.capacity && summary.capacity > 0 ? summary.totalQty / summary.capacity : 0;
+  const isHm = summary.bin.startsWith("HM");
 
-  let tone = "border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50";
-  if (summary.isOverflow) {
-    tone = "border-red-300 bg-red-50 text-red-900 hover:border-red-400";
-  } else if (summary.totalQty === 0) {
-    tone = "border-slate-200 bg-slate-50 text-slate-500 hover:border-slate-400";
-  } else if (ratio >= 1) {
-    tone = "border-amber-300 bg-amber-50 text-amber-900 hover:border-amber-400";
-  } else if (ratio >= 0.8) {
-    tone = "border-emerald-300 bg-emerald-50 text-emerald-900 hover:border-emerald-400";
-  } else {
-    tone = "border-sky-300 bg-sky-50 text-sky-900 hover:border-sky-400";
+  let tone = "border-slate-400 bg-white text-slate-800 hover:bg-slate-50";
+  if (isHm) {
+    tone = "border-sky-400 bg-sky-100 text-sky-900 hover:bg-sky-100";
+  } else if (summary.isSideBin) {
+    tone = "border-rose-400 bg-white text-slate-800 hover:bg-rose-50";
   }
 
-  const selectedTone = selected ? " ring-2 ring-slate-900 ring-offset-1" : "";
-  const sideTone = summary.isSideBin ? " border-dashed" : "";
+  const selectedTone = selected ? " ring-1 ring-slate-900 ring-offset-0" : "";
+  const overflowTone = summary.isOverflow ? " shadow-[inset_0_0_0_1px_rgb(239,68,68)]" : "";
   const hiddenTone = matched ? "" : " opacity-25";
 
-  return `h-[58px] w-full rounded-xl border p-2 text-left transition ${tone}${selectedTone}${sideTone}${hiddenTone}`;
+  return `h-[22px] w-full rounded-[3px] border px-1 text-center transition ${tone}${selectedTone}${overflowTone}${hiddenTone}`;
 }
 
 export default function WarehouseBinMapClickableBSequenceFixed() {
@@ -768,7 +762,7 @@ export default function WarehouseBinMapClickableBSequenceFixed() {
     [summaries, attackThreshold, allowSideBinSource]
   );
 
-  const GRID_TEMPLATE = "96px 36px 96px 96px 36px 96px 96px 36px 96px 96px 36px 96px 96px 36px 96px 96px 36px 96px";
+  const GRID_TEMPLATE = "52px 22px 52px 52px 22px 52px 52px 22px 52px 52px 22px 52px 52px 22px 52px 52px 22px 52px";
 
   const renderBinButton = (bin: string, extraClass = "", span = 1) => {
     const summary = summaries.get(bin) ?? summarizeBin([], bin, true);
@@ -783,12 +777,7 @@ export default function WarehouseBinMapClickableBSequenceFixed() {
         style={span > 1 ? { gridColumn: `span ${span} / span ${span}` } : undefined}
         className={`${getBinButtonClass(summary, selected, matched)} ${extraClass}`.trim()}
       >
-        <div className="flex items-start justify-between gap-2">
-          <span className="text-[11px] font-semibold leading-none">{bin}</span>
-          {summary.isSideBin ? <span className="text-[9px] uppercase">Side</span> : null}
-        </div>
-        <div className="mt-1 text-[10px] leading-tight opacity-80">{summary.totalQty}/{summary.capacity ?? "—"}</div>
-        <div className="mt-1 truncate text-[10px] leading-tight opacity-80">{summary.items[0]?.material || "Empty"}</div>
+        <span className="text-[9px] font-semibold leading-none">{bin}</span>
       </button>
     );
   };
@@ -797,12 +786,17 @@ export default function WarehouseBinMapClickableBSequenceFixed() {
     <div
       key={key}
       style={span > 1 ? { gridColumn: `span ${span} / span ${span}` } : undefined}
-      className="h-[58px] rounded-xl border border-transparent bg-transparent"
+      className="h-[22px] rounded-[3px] border border-transparent bg-transparent"
     />
   );
 
-  const renderLaneCell = (key: string) => (
-    <div key={key} className="h-[58px] rounded-xl border border-dashed border-slate-200 bg-slate-50" />
+  const renderLaneCell = (key: string, showLabel = false) => (
+    <div
+      key={key}
+      className="flex h-[22px] items-center justify-center"
+    >
+      {showLabel ? <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">LANE</span> : null}
+    </div>
   );
 
   return (
@@ -894,57 +888,84 @@ export default function WarehouseBinMapClickableBSequenceFixed() {
           <Card className="rounded-2xl shadow-sm">
             <CardHeader><CardTitle className="text-lg">Warehouse layout</CardTitle></CardHeader>
             <CardContent>
-              <div className="overflow-x-auto rounded-2xl border bg-white p-4">
+              <div className="overflow-x-auto rounded-2xl border border-slate-300 bg-slate-200 p-3">
                 <div className="min-w-max space-y-1">
                   <div className="grid gap-1" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">A</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">B</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">C</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">D</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">E</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">F</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">G</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">H</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">HH</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">II</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">I</div>
-                    <div className="rounded-xl bg-slate-900 px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white">Lane</div>
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-semibold text-white">J</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">A</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">B</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">C</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">D</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">E</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">F</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">G</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">H</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">HH</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">II</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">I</div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-1 py-1 text-center text-[8px] font-semibold uppercase tracking-wide text-slate-800"> </div>
+                    <div className="rounded-md border border-slate-500 bg-slate-300 px-2 py-1 text-center text-[9px] font-semibold text-slate-900">J</div>
                   </div>
 
-                  {ALIGNMENT_ROWS.map((row) => (
-                    <div key={row.key} className="grid gap-1" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
-                      {row.a ? renderBinButton(row.a) : renderEmptyCell(`${row.key}-a`)}
-                      {renderLaneCell(`${row.key}-lane-1`)}
-                      {row.b ? renderBinButton(row.b) : renderEmptyCell(`${row.key}-b`)}
-                      {row.c ? renderBinButton(row.c) : renderEmptyCell(`${row.key}-c`)}
-                      {renderLaneCell(`${row.key}-lane-2`)}
-                      {row.d ? renderBinButton(row.d) : renderEmptyCell(`${row.key}-d`)}
-                      {row.e ? renderBinButton(row.e) : renderEmptyCell(`${row.key}-e`)}
-                      {renderLaneCell(`${row.key}-lane-3`)}
-                      {row.f ? renderBinButton(row.f) : renderEmptyCell(`${row.key}-f`)}
-                      {row.g ? renderBinButton(row.g) : renderEmptyCell(`${row.key}-g`)}
-                      {renderLaneCell(`${row.key}-lane-4`)}
-                      {row.hm ? (
-                        renderBinButton(row.hm, "", 2)
-                      ) : (
-                        <>
-                          {row.h ? renderBinButton(row.h) : renderEmptyCell(`${row.key}-h`)}
-                          {row.hh ? renderBinButton(row.hh) : renderEmptyCell(`${row.key}-hh`)}
-                        </>
-                      )}
-                      {renderLaneCell(`${row.key}-lane-5`)}
-                      {row.ii ? renderBinButton(row.ii) : renderEmptyCell(`${row.key}-ii`)}
-                      {row.i ? renderBinButton(row.i) : renderEmptyCell(`${row.key}-i`)}
-                      {renderLaneCell(`${row.key}-lane-6`)}
-                      {row.j ? renderBinButton(row.j) : renderEmptyCell(`${row.key}-j`)}
+                  {ALIGNMENT_ROWS.map((row) => {
+                    const showCrossLaneLabel = row.a === "A24";
+
+                    return (
+                      <div key={row.key} className="grid gap-1" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
+                        {row.a ? renderBinButton(row.a) : renderEmptyCell(`${row.key}-a`)}
+                        {renderLaneCell(`${row.key}-lane-1`, showCrossLaneLabel)}
+                        {row.b ? renderBinButton(row.b) : renderEmptyCell(`${row.key}-b`)}
+                        {row.c ? renderBinButton(row.c) : renderEmptyCell(`${row.key}-c`)}
+                        {renderLaneCell(`${row.key}-lane-2`, showCrossLaneLabel)}
+                        {row.d ? renderBinButton(row.d) : renderEmptyCell(`${row.key}-d`)}
+                        {row.e ? renderBinButton(row.e) : renderEmptyCell(`${row.key}-e`)}
+                        {renderLaneCell(`${row.key}-lane-3`, showCrossLaneLabel)}
+                        {row.f ? renderBinButton(row.f) : renderEmptyCell(`${row.key}-f`)}
+                        {row.g ? renderBinButton(row.g) : renderEmptyCell(`${row.key}-g`)}
+                        {renderLaneCell(`${row.key}-lane-4`, showCrossLaneLabel)}
+                        {row.hm ? (
+                          renderBinButton(row.hm, "", 2)
+                        ) : (
+                          <>
+                            {row.h ? renderBinButton(row.h) : renderEmptyCell(`${row.key}-h`)}
+                            {row.hh ? renderBinButton(row.hh) : renderEmptyCell(`${row.key}-hh`)}
+                          </>
+                        )}
+                        {renderLaneCell(`${row.key}-lane-5`, showCrossLaneLabel)}
+                        {row.ii ? renderBinButton(row.ii) : renderEmptyCell(`${row.key}-ii`)}
+                        {row.i ? renderBinButton(row.i) : renderEmptyCell(`${row.key}-i`)}
+                        {renderLaneCell(`${row.key}-lane-6`, showCrossLaneLabel)}
+                        {row.j ? renderBinButton(row.j) : renderEmptyCell(`${row.key}-j`)}
+                      </div>
+                    );
+                  })}
+
+                  <div className="mt-6 grid gap-2" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
+                    <div style={{ gridColumn: "1 / span 3" }}>
+                      <div className="mx-auto w-fit rounded-[3px] border border-slate-600 bg-slate-100 px-4 py-1 text-[9px] font-semibold tracking-wide text-slate-900">
+                        PALLETS
+                      </div>
                     </div>
-                  ))}
+                    <div style={{ gridColumn: "8 / span 4" }}>
+                      <div className="mx-auto w-fit rounded-[3px] border border-slate-600 bg-slate-100 px-4 py-1 text-[9px] font-semibold tracking-wide text-slate-900">
+                        RACKS
+                      </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-center gap-2" style={{ gridColumn: "5 / span 10" }}>
+                      {["LINE 1", "LINE 2", "3", "4", "5", "6", "7", "8", "9", "10", "11"].map((lineLabel) => (
+                        <div
+                          key={lineLabel}
+                          className="rounded-[3px] border border-slate-400 bg-slate-100 px-2.5 py-1 text-[8px] font-semibold tracking-wide text-slate-700"
+                        >
+                          {lineLabel}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </CardContent>

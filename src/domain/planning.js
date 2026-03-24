@@ -26,6 +26,10 @@ export function binValue(binId, binState, overrides = {}) {
   return cap * tier;
 }
 
+export function moveKey(materialId, from, to) {
+  return `${String(materialId || "").trim()}|${normBin(from)}|${normBin(to)}`;
+}
+
 export function consolidate({
   stockRows,
   emptyBinsSet,
@@ -41,6 +45,8 @@ export function consolidate({
   disabledBins = new Set(),
   excludeHISource = true,
   excludedBinSet = new Set(),
+  avoidedTargetRows = new Set(),
+  ignoredMoveKeys = new Set(),
 }) {
   const binState = buildBinState(stockRows);
   const moves = [];
@@ -67,6 +73,7 @@ export function consolidate({
   const canReceiveMaterial = (binId, materialId, fromBinId) => {
     const { rowKey, upper } = parseBin(binId);
     if (rowKey === "A" || rowKey === "B" || rowKey === "C") return false;
+    if (avoidedTargetRows.has(rowKey)) return false;
     if (SIDE_BINS.has(upper)) return false;
     if (lockedBins?.has(normBin(binId))) return false;
     if (disabledBins?.has(normBin(binId))) return false;
@@ -84,6 +91,7 @@ export function consolidate({
   const applyMove = (materialId, from, to, qty, tag = "normal") => {
     const q = Number(qty.toFixed(3));
     if (q <= 0) return;
+    if (ignoredMoveKeys.has(moveKey(materialId, from, to))) return;
     moves.push({ id: moveId++, materialId, materialDesc: materialDescMap[materialId] || "", from, to, qty: q, tag });
     if (binState[from]) {
       binState[from].totalQty -= q;
@@ -174,6 +182,7 @@ export function consolidate({
       const jTargets = existingBins
         .filter((t) => t !== from && isNonEmpty(t))
         .filter((t) => canReceiveMaterial(t, materialId, from))
+        .filter((t) => !ignoredMoveKeys.has(moveKey(materialId, from, t)))
         .filter((t) => liveFree(t) >= MIN_FREE_FOR_NONEMPTY);
       if (jTargets.length === 0) continue;
       jTargets.sort((a, b) => liveFree(b) - liveFree(a));
@@ -193,6 +202,7 @@ export function consolidate({
     const nonEmptyTargets = existingBins
       .filter((t) => t !== from && isNonEmpty(t))
       .filter((t) => canReceiveMaterial(t, materialId, from))
+      .filter((t) => !ignoredMoveKeys.has(moveKey(materialId, from, t)))
       .filter((t) => liveFree(t) >= MIN_FREE_FOR_NONEMPTY);
 
     const pool = nonEmptyTargets;
@@ -278,6 +288,7 @@ export function consolidate({
       .filter((t) => !isNonEmpty(t))
       .filter((t) => !recentlyFreed.has(t))
       .filter((t) => canReceiveMaterial(t, matId, sources[0].binId))
+      .filter((t) => !ignoredMoveKeys.has(moveKey(matId, sources[0].binId, t)))
       .filter((t) => effectiveCapacity(t, binState, capOverrides) > 0);
 
     if (!emptyTargets.length) continue;
@@ -311,7 +322,18 @@ export function consolidate({
   return { moves, finalBinState: binState };
 }
 
-export function findBestBin({ query, qtyNeeded, stockRows, emptyBinsSet, emptyBinTypes, allowAB, allowTgt110, allowTgt111, capOverrides = {} }) {
+export function findBestBin({
+  query,
+  qtyNeeded,
+  stockRows,
+  emptyBinsSet,
+  emptyBinTypes,
+  allowAB,
+  allowTgt110,
+  allowTgt111,
+  capOverrides = {},
+  avoidedTargetRows = new Set(),
+}) {
   const q = String(query || "").trim().toLowerCase();
   if (!q) return { ok: false, reason: "Enter a material number or description." };
   const need = toNum(qtyNeeded);
@@ -352,6 +374,7 @@ export function findBestBin({ query, qtyNeeded, stockRows, emptyBinsSet, emptyBi
     if (!B) return false;
     const { rowKey } = parseBin(B);
     if (!allowAB && (rowKey === "A" || rowKey === "B" || rowKey === "C")) return false;
+    if (avoidedTargetRows.has(rowKey)) return false;
     const t = typeOf(B);
     if (!allowedTargetType(t)) return false;
     if (materialIsR !== null && B.includes("R") !== materialIsR) return false;
