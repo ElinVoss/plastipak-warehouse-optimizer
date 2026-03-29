@@ -15,6 +15,7 @@ import { loadCapOverrides, saveCapOverrides, loadDisabledBins, saveDisabledBins 
 import { validateSapHeaders, parseSapExport, buildBinState } from "./domain/sap";
 import { calculateAnalytics } from "./domain/analytics";
 import { consolidate, findBestBin, moveKey } from "./domain/planning";
+import { ChatBubble, AgentDataProvider } from "./features/agent";
 import {
   Upload,
   RefreshCcw,
@@ -610,6 +611,10 @@ export default function App() {
   }
 
   return (
+    <AgentDataProvider value={{
+      stockRows, binState: memoizedBinState, capOverrides,
+      disabledBins, emptyBinsFromExport, emptyBinTypes, moves, analytics, warehouse,
+    }}>
     <div className="min-h-screen bg-[#ece6da] text-slate-900 font-sans">
       <div className="mx-auto max-w-7xl p-3 lg:p-5">
         <div className="overflow-hidden rounded-[28px] border border-stone-300/80 bg-[#fcfaf6] shadow-[0_24px_60px_rgba(41,37,36,0.12)]">
@@ -1493,6 +1498,8 @@ export default function App() {
           movesCount: moves.length,
         }}
       />
+      <ChatBubble />
     </div>
+    </AgentDataProvider>
   );
 }

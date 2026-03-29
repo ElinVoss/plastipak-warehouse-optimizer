@@ -52,6 +52,9 @@ export function consolidate({
   const moves = [];
   let moveId = 1;
   const materialDescMap = {};
+  const HHII_ROWS = new Set(["HH", "II"]);
+  const HI_ROWS = new Set(["H", "I"]);
+  const hhiiFollowupTargets = new Set();
   for (const r of stockRows) materialDescMap[r.materialId] = r.materialDesc || "";
 
   const liveFree = (binId) => {
@@ -62,6 +65,7 @@ export function consolidate({
 
   const isNonEmpty = (binId) => (binState[binId]?.totalQty || 0) > 0;
   const typeOf = (binId) => String(binState[binId]?.storageType || emptyBinTypes?.[binId] || "");
+  const scaleQty = (qty) => Math.round(Number(qty || 0) * 1000);
 
   const canTargetType = (binId) => {
     const t = typeOf(binId);
@@ -113,6 +117,105 @@ export function consolidate({
     if (!binState[to].descByMaterial[materialId]) binState[to].descByMaterial[materialId] = materialDescMap[materialId] || "";
   };
 
+  const maybeApplyHhIiFollowup = (materialId, targetBin) => {
+    if (hhiiFollowupTargets.has(targetBin)) return false;
+
+    const targetFree = liveFree(targetBin);
+    if (targetFree <= 0) return false;
+
+    const followup = Object.entries(binState)
+      .map(([binId, st]) => ({ binId, st, rowKey: parseBin(binId).rowKey }))
+      .filter(({ binId, st, rowKey }) => {
+        if (!HHII_ROWS.has(rowKey)) return false;
+        if (binId === targetBin) return false;
+        if ((st?.totalQty || 0) <= 0) return false;
+        if (st.storageType === "111") return false;
+        if (st.storageType === "110" && !allowSrc110) return false;
+        if (lockedBins?.has(binId)) return false;
+        if (disabledBins?.has(binId)) return false;
+        if (excludedBinSet.has(binId)) return false;
+        if (!canReceiveMaterial(targetBin, materialId, binId)) return false;
+        if (ignoredMoveKeys.has(moveKey(materialId, binId, targetBin))) return false;
+        if (st.materials?.size !== 1 || !st.materials.has(materialId)) return false;
+        const qty = st.byMaterialQty?.[materialId] || 0;
+        return qty > 0 && qty <= targetFree;
+      })
+      .sort((a, b) => {
+        const aQty = a.st.byMaterialQty?.[materialId] || 0;
+        const bQty = b.st.byMaterialQty?.[materialId] || 0;
+        if (bQty !== aQty) return bQty - aQty;
+        if (a.rowKey !== b.rowKey) return a.rowKey.localeCompare(b.rowKey);
+        return a.binId.localeCompare(b.binId);
+      })[0];
+
+    if (!followup) return false;
+
+    applyMove(
+      materialId,
+      followup.binId,
+      targetBin,
+      followup.st.byMaterialQty[materialId],
+      "hhii-followup"
+    );
+    hhiiFollowupTargets.add(targetBin);
+    return true;
+  };
+
+  const chooseBestTightFill = (sources, materialId, targetBin) => {
+    const targetCap = effectiveCapacity(targetBin, binState, capOverrides);
+    const targetCapScaled = scaleQty(targetCap);
+    const minFillScaled = scaleQty(Math.max(0, targetCap - 2));
+    const allowHIRows = targetCap <= 25;
+    const eligibleSources = sources.filter((src) => {
+      if (HHII_ROWS.has(src.rowKey)) return false;
+      if (!allowHIRows && HI_ROWS.has(src.rowKey)) return false;
+      if (ignoredMoveKeys.has(moveKey(materialId, src.binId, targetBin))) return false;
+      return true;
+    });
+
+    if (eligibleSources.length < 2) return null;
+
+    const states = new Map([[0, { count: 0, indices: [] }]]);
+    eligibleSources.forEach((src, idx) => {
+      const qtyScaled = scaleQty(src.qty);
+      const snapshot = Array.from(states.entries());
+      for (const [filledScaled, state] of snapshot) {
+        const nextFilled = filledScaled + qtyScaled;
+        if (nextFilled > targetCapScaled) continue;
+        const nextState = { count: state.count + 1, indices: [...state.indices, idx] };
+        const existing = states.get(nextFilled);
+        if (!existing || nextState.count > existing.count) {
+          states.set(nextFilled, nextState);
+        }
+      }
+    });
+
+    let best = null;
+    for (const [filledScaled, state] of states.entries()) {
+      if (state.count < 2) continue;
+      if (filledScaled < minFillScaled) continue;
+      const leftoverScaled = targetCapScaled - filledScaled;
+      if (
+        !best ||
+        state.count > best.count ||
+        (state.count === best.count && leftoverScaled < best.leftoverScaled) ||
+        (state.count === best.count && leftoverScaled === best.leftoverScaled && filledScaled > best.filledScaled)
+      ) {
+        best = { count: state.count, leftoverScaled, filledScaled, indices: state.indices };
+      }
+    }
+
+    if (!best) return null;
+
+    return {
+      targetBin,
+      targetCap,
+      totalMoved: best.filledScaled / 1000,
+      leftover: best.leftoverScaled / 1000,
+      sources: best.indices.map((idx) => eligibleSources[idx]),
+    };
+  };
+
   const matTotalQty = {};
   const candidateMoves = [];
   const HIGH_VALUE_ROWS = new Set(["D", "E", "F", "G"]);
@@ -132,7 +235,7 @@ export function consolidate({
     }
   }
 
-  const NEVER_SOURCE_ROWS = excludeHISource ? new Set(["H", "HH", "I", "II"]) : new Set();
+  const NEVER_SOURCE_ROWS = excludeHISource ? new Set(["H", "I"]) : new Set();
 
   for (const [binId, st] of Object.entries(binState)) {
     if (lockedBins?.has(binId)) continue;
@@ -140,6 +243,7 @@ export function consolidate({
     if (st.storageType === "111") continue;
     if (st.storageType === "110" && !allowSrc110) continue;
     const { rowKey } = parseBin(binId);
+    if (HHII_ROWS.has(rowKey)) continue;
     if (NEVER_SOURCE_ROWS.has(rowKey)) continue;
     if (excludedBinSet.has(binId)) continue;
     const srcValue = binValue(binId, binState, capOverrides);
@@ -192,8 +296,14 @@ export function consolidate({
         const space = liveFree(t);
         if (space <= 0) continue;
         const moveQty = Math.min(space, remaining);
-        if (moveQty > 0) { applyMove(materialId, from, t, moveQty); remaining -= moveQty; }
-        if (remaining <= 0) break;
+        if (moveQty > 0) {
+          applyMove(materialId, from, t, moveQty);
+          remaining -= moveQty;
+        }
+        if (remaining <= 0) {
+          maybeApplyHhIiFollowup(materialId, t);
+          break;
+        }
       }
       if ((binState[from]?.totalQty || 0) < 1e-6) recentlyFreed.add(from);
       continue;
@@ -240,6 +350,7 @@ export function consolidate({
     const oneShot = pool.find((t) => liveFree(t) >= remaining);
     if (oneShot) {
       applyMove(materialId, from, oneShot, remaining);
+      maybeApplyHhIiFollowup(materialId, oneShot);
       if ((binState[from]?.totalQty || 0) < 1e-6) recentlyFreed.add(from);
       continue;
     }
@@ -256,7 +367,13 @@ export function consolidate({
       const space = liveFree(best);
       if (space <= 0) { remainingPool.shift(); continue; }
       const moveQty = Math.min(space, remaining);
-      if (moveQty > 0) { applyMove(materialId, from, best, moveQty); remaining -= moveQty; }
+      if (moveQty > 0) {
+        applyMove(materialId, from, best, moveQty);
+        remaining -= moveQty;
+      }
+      if (remaining <= 0) {
+        maybeApplyHhIiFollowup(materialId, best);
+      }
       if (liveFree(best) <= 0) remainingPool.shift();
     }
     if ((binState[from]?.totalQty || 0) < 1e-6) recentlyFreed.add(from);
@@ -271,51 +388,55 @@ export function consolidate({
     if (st.storageType === "111") continue;
     if (st.storageType === "110" && !allowSrc110) continue;
     const { rowKey: srcRow } = parseBin(binId);
+    if (HHII_ROWS.has(srcRow)) continue;
     if (NEVER_SOURCE_ROWS.has(srcRow)) continue;
     if (excludedBinSet.has(binId)) continue;
     const matId = Array.from(st.materials)[0];
     const qty = st.byMaterialQty[matId] || 0;
     if (qty <= 0) continue;
     if (!matBinsPass2[matId]) matBinsPass2[matId] = [];
-    matBinsPass2[matId].push({ binId, qty });
+    matBinsPass2[matId].push({ binId, qty, rowKey: srcRow });
   }
 
   for (const [matId, sources] of Object.entries(matBinsPass2)) {
     if (sources.length < 2) continue;
-    sources.sort((a, b) => a.qty - b.qty);
 
     const emptyTargets = emptyBins
       .filter((t) => !isNonEmpty(t))
       .filter((t) => !recentlyFreed.has(t))
       .filter((t) => canReceiveMaterial(t, matId, sources[0].binId))
-      .filter((t) => !ignoredMoveKeys.has(moveKey(matId, sources[0].binId, t)))
       .filter((t) => effectiveCapacity(t, binState, capOverrides) > 0);
 
     if (!emptyTargets.length) continue;
 
-    emptyTargets.sort((a, b) => {
-      const aPreferred = NEVER_SOURCE_ROWS.has(parseBin(a).rowKey) ? 1 : 0;
-      const bPreferred = NEVER_SOURCE_ROWS.has(parseBin(b).rowKey) ? 1 : 0;
-      if (aPreferred !== bPreferred) return aPreferred - bPreferred;
-      return effectiveCapacity(b, binState, capOverrides) - effectiveCapacity(a, binState, capOverrides);
-    });
-
+    let bestPlan = null;
     for (const emptyBin of emptyTargets) {
-      const cap = effectiveCapacity(emptyBin, binState, capOverrides);
-      const selected = [];
-      let cumQty = 0;
-      for (const src of sources) {
-        if (cumQty + src.qty > cap) continue;
-        if ((binState[src.binId]?.byMaterialQty?.[matId] || 0) < src.qty - 1e-6) continue;
-        selected.push(src);
-        cumQty += src.qty;
+      const freshSources = sources.filter(
+        (src) => (binState[src.binId]?.byMaterialQty?.[matId] || 0) >= src.qty - 1e-6
+      );
+      const candidate = chooseBestTightFill(freshSources, matId, emptyBin);
+      if (!candidate) continue;
+      if (
+        !bestPlan ||
+        candidate.sources.length > bestPlan.sources.length ||
+        (candidate.sources.length === bestPlan.sources.length && candidate.leftover < bestPlan.leftover) ||
+        (candidate.sources.length === bestPlan.sources.length &&
+          candidate.leftover === bestPlan.leftover &&
+          candidate.targetCap < bestPlan.targetCap) ||
+        (candidate.sources.length === bestPlan.sources.length &&
+          candidate.leftover === bestPlan.leftover &&
+          candidate.targetCap === bestPlan.targetCap &&
+          candidate.targetBin.localeCompare(bestPlan.targetBin) < 0)
+      ) {
+        bestPlan = candidate;
       }
-      if (selected.length < 2) continue;
-      for (const src of selected) {
-        applyMove(matId, src.binId, emptyBin, src.qty);
-        if ((binState[src.binId]?.totalQty || 0) < 1e-6) recentlyFreed.add(src.binId);
-      }
-      break;
+    }
+
+    if (!bestPlan) continue;
+
+    for (const src of bestPlan.sources) {
+      applyMove(matId, src.binId, bestPlan.targetBin, src.qty, "tight-empty-pack");
+      if ((binState[src.binId]?.totalQty || 0) < 1e-6) recentlyFreed.add(src.binId);
     }
   }
 
