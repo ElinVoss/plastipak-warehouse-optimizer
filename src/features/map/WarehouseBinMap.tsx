@@ -101,8 +101,8 @@ type WarehouseColumn =
 
 const NORMAL_SIDE_SUFFIXES = new Set(["07", "13", "19", "25", "31", "37", "43"]);
 const B_SIDE_BINS = new Set(["BS6", "B09", "B15", "B21", "B27", "B33", "B39", "B42"]);
-const H_SIDE_BINS = new Set(["HM03", "H09", "H15", "H21", "H27", "H33", "H39", "H43"]);
-const HH_SIDE_BINS = new Set(["HM03", "HH09", "HH15", "HH21", "HH27", "HH33", "HH39", "HH43"]);
+const H_SIDE_BINS = new Set(["H09", "H15", "H21", "H27", "H33", "H39"]);
+const HH_SIDE_BINS = new Set(["HH09", "HH15", "HH21", "HH27", "HH33", "HH39"]);
 
 const REGULAR_CAPACITY: Record<string, number> = {
   A: 43,
@@ -110,7 +110,7 @@ const REGULAR_CAPACITY: Record<string, number> = {
   C: 28,
   D: 28,
   E: 28,
-  F: 43,
+  F: 40,
   G: 25,
   H: 16,
   HH: 5,
@@ -134,10 +134,16 @@ const SIDE_CAPACITY: Record<string, number> = {
 };
 
 const HM_CAPACITY: Record<string, number> = {
-  HM01: 22,
-  HM02: 22,
-  HM03: 6,
-  HM04: 22,
+  HM01: 16,
+  HM02: 16,
+  HM03: 4,
+  HM04: 16,
+};
+
+// Per-bin capacity overrides for bins that differ from their row's standard/side capacity
+const BIN_CAPACITY_OVERRIDES: Record<string, number> = {
+  B40: 22, B41: 22, B42: 22, B43: 8,
+  C38: 22, C39: 22, C40: 22, C41: 22, C42: 22, C43: 8,
 };
 
 function pad2(value: number): string {
@@ -161,9 +167,11 @@ function buildBRowBins(): string[] {
     "BS5",
     "BS6",
     "BS7",
-    "B04",
     "B05",
-    ...makeRange("B", 6, 42),
+    "B06",
+    "B07",
+    "B08",
+    ...makeRange("B", 9, 43),
   ];
 }
 
@@ -312,6 +320,7 @@ function isSideBin(bin: string): boolean {
 function getBinCapacity(bin: string): number | null {
   if (!bin) return null;
   if (bin in HM_CAPACITY) return HM_CAPACITY[bin as keyof typeof HM_CAPACITY];
+  if (bin in BIN_CAPACITY_OVERRIDES) return BIN_CAPACITY_OVERRIDES[bin];
 
   const rowKey = getRowKey(bin);
   if (!rowKey || rowKey === "HM") return null;
@@ -866,7 +875,8 @@ export default function WarehouseBinMapClickableBSequenceFixed() {
                 </label>
                 <div className="text-xs text-slate-500">Enter 0–100. A, B, C, and D rows are always prioritized over other rows.</div>
               </div>
-              <div className="text-sm text-slate-600">Each horizontal band is a physical warehouse alignment slot. That makes A02/B02/C02 line up, A04/BS3/C04 line up, and A07/BS6/C07/.../HM03/II07/I07 line up.</div>
+              <div className="text-sm text-slate-600">Each horizontal band is a physical warehouse alignment slot. That makes A02/B02/C02 line up, A04/BS3/C04 line up, and A07/BS6/C07/.../HM03/II07/I07 line up. Row B then continues B05, B06, B07, B08, B09... so the next side-bin band lands at B09, while the shared H/HH tunnel resumes side bins at H09/HH09.</div>
+              <div className="text-sm text-slate-600">Row J is its own straight run from J01 to J43 and does not use side-bin positions. Rows F, G, I, and II continue through 47.</div>
               <div className="text-sm text-slate-600">Consolidation only targets occupied same-material regular bins. It never uses empty bins, never uses side bins as targets, and excludes storage type 111 from source and target use.</div>
               <div className="text-sm text-slate-600">Side-bin sourcing is currently {allowSideBinSource ? "enabled" : "disabled"}.</div>
               <div className="text-sm text-slate-600">Source attack order now favors bins at or under your entered fill percentage first, then favors A/B/C/D rows over the rest of the warehouse.</div>
